@@ -60,7 +60,6 @@ func (r *Resp) readInteger() (x int, n int, err error) {
 
 func (r *Resp) Read() (Value, error) {
 	_type, err := r.reader.ReadByte()
-
 	if err != nil {
 		return Value{}, err
 	}
@@ -71,8 +70,7 @@ func (r *Resp) Read() (Value, error) {
 	case BULK:
 		return r.readBulk()
 	default:
-		fmt.Printf("Unknown type: %v", string(_type))
-		return Value{}, nil
+		return r.readUnknownType(_type)
 	}
 }
 
@@ -80,21 +78,19 @@ func (r *Resp) readArray() (Value, error) {
 	v := Value{}
 	v.typ = "array"
 
-	// read length of array
+	// Read the length of the array
 	len, _, err := r.readInteger()
 	if err != nil {
 		return v, err
 	}
 
-	// foreach line, parse and read the value
+	// Parse each element in the array
 	v.array = make([]Value, 0)
 	for i := 0; i < len; i++ {
 		val, err := r.Read()
 		if err != nil {
 			return v, err
 		}
-
-		// append parsed value to array
 		v.array = append(v.array, val)
 	}
 
@@ -103,7 +99,6 @@ func (r *Resp) readArray() (Value, error) {
 
 func (r *Resp) readBulk() (Value, error) {
 	v := Value{}
-
 	v.typ = "bulk"
 
 	len, _, err := r.readInteger()
@@ -112,18 +107,23 @@ func (r *Resp) readBulk() (Value, error) {
 	}
 
 	bulk := make([]byte, len)
-
-	r.reader.Read(bulk)
+	_, err = r.reader.Read(bulk)
+	if err != nil {
+		return v, err
+	}
 
 	v.bulk = string(bulk)
 
-	// Read the trailing CRLF
-	r.readLine()
+	// Consume the trailing CRLF
+	_, _, err = r.readLine()
+	if err != nil {
+		return v, err
+	}
 
 	return v, nil
 }
 
-// Marshal Value to bytes
+// Marshal Value to RESP bytes
 func (v Value) Marshal() []byte {
 	switch v.typ {
 	case "array":
@@ -133,9 +133,9 @@ func (v Value) Marshal() []byte {
 	case "string":
 		return v.marshalString()
 	case "null":
-		return v.marshallNull()
+		return v.marshalNull()
 	case "error":
-		return v.marshallError()
+		return v.marshalError()
 	default:
 		return []byte{}
 	}
@@ -146,7 +146,6 @@ func (v Value) marshalString() []byte {
 	bytes = append(bytes, STRING)
 	bytes = append(bytes, v.str...)
 	bytes = append(bytes, '\r', '\n')
-
 	return bytes
 }
 
@@ -157,7 +156,6 @@ func (v Value) marshalBulk() []byte {
 	bytes = append(bytes, '\r', '\n')
 	bytes = append(bytes, v.bulk...)
 	bytes = append(bytes, '\r', '\n')
-
 	return bytes
 }
 
@@ -167,23 +165,42 @@ func (v Value) marshalArray() []byte {
 	bytes = append(bytes, ARRAY)
 	bytes = append(bytes, strconv.Itoa(len)...)
 	bytes = append(bytes, '\r', '\n')
-
-	for i := 0; i < len; i++ {
-		bytes = append(bytes, v.array[i].Marshal()...)
+	for _, elem := range v.array {
+		bytes = append(bytes, elem.Marshal()...)
 	}
-
 	return bytes
 }
 
-func (v Value) marshallError() []byte {
+func (v Value) marshalError() []byte {
 	var bytes []byte
 	bytes = append(bytes, ERROR)
 	bytes = append(bytes, v.str...)
 	bytes = append(bytes, '\r', '\n')
-
 	return bytes
 }
 
-func (v Value) marshallNull() []byte {
+func (v Value) marshalNull() []byte {
 	return []byte("$-1\r\n")
+}
+
+// Writer to handle RESP output
+
+type Writer struct {
+	writer io.Writer
+}
+
+func NewWriter(w io.Writer) *Writer {
+	return &Writer{writer: w}
+}
+
+func (w *Writer) Write(v Value) error {
+	bytes := v.Marshal()
+	_, err := w.writer.Write(bytes)
+	return err
+}
+
+// Added functionality for error handling of unknown types
+func (r *Resp) readUnknownType(_type byte) (Value, error) {
+	fmt.Printf("Unknown RESP type: %v\n", string(_type))
+	return Value{typ: "error", str: "ERR unknown type"}, nil
 }
